@@ -1,14 +1,12 @@
 #include <Servo.h>
+#include <Wire.h>
+#include <MPU6050.h>
 
-// First motor
+// Motor
 const int m1_1 = 2;
 const int m1_2 = 3;
-// Second motor
-const int m2_1 = 4;
-const int m2_2 = 5;
 // motor speed control
 const int ena = 9;
-const int enb = 10;
 
 // Front-facing sensor
 const int trigPin1 = 9;
@@ -40,12 +38,40 @@ const int safeDistForTurn = 0;
 const int turnDegServo = 90;
 const int turnThreshold = 5;
 
+// Servo
 Servo steer;
-
 int servo_pwm = 3;
 int servo_pos = 0;
 
+// Compass
+MPU6050 mpu;
+float yaw = 0;
+unsigned long lastTime;
+float gyroZoffset = 0;
+
 float distFront, distLeft, distRight, distFrontLeft, distFrontRight, initDistFront, initDistBack, distBack;
+
+
+void calibrateGyro() {
+  Wire.begin();
+  mpu.initialize();
+  if (!mpu.testConnection()) {
+    Serial.println("MPU6050 connection failed!");
+    while (1);
+  }
+
+  long sum = 0;
+  for (int i = 0; i < 1000; i++) {
+    int16_t gx, gy, gz;
+    mpu.getRotation(&gx, &gy, &gz);
+    sum += gz;
+    delay(2);
+  }
+  gyroZoffset = sum / 1000.0;
+  Serial.print("Gyro Z offset = "); Serial.println(gyroZoffset);
+
+  lastTime = millis();
+}
 
 void setup() {
   pinMode(m1_1, OUTPUT);
@@ -71,6 +97,7 @@ void setup() {
   Serial.begin(9600);
 
   delay(100); 
+  calibrateGyro();
   // initDistBack = measureDist(trigPin4, echoPin4);
 }
 
@@ -95,6 +122,18 @@ bool isOnLine() {
     lineFlag = false;
     return false;
   }
+}
+
+void updateYaw() {
+  int gx, gy, gz;
+  mpu.getRotation(&gx, &gy, &gz);
+
+  unsigned long now = millis();
+  float dt = (now - lastTime) / 1000.0;
+  lastTime = now;
+
+  float gyroZ = (gz - gyroZoffset) / 131.0; // dps
+  yaw += gyroZ * dt;
 }
 
 void turnLeft() {
@@ -140,18 +179,16 @@ void stopVehicle() {
 
 void moveForward() {
   // move vehicle forward with variable speed depending on different situations
-  analogWrite(9, 200);
-  analogWrite(10, 200);
+  analogWrite(ena, 200);
 
   digitalWrite(m1_1,  HIGH);
   digitalWrite(m1_2, LOW);
-  digitalWrite(m2_1, HIGH);
-  digitalWrite(m2_2, LOW);
   steer.write(90);
 }
 
 int turns = 0;
 void loop() {
+  updateYaw();
   distFront = measureDist(trigPin1, echoPin1);
   distFrontLeft = measureDist(trigPin4, echoPin4);
   distFrontRight = measureDist(trigPin5, echoPin5);
@@ -178,22 +215,30 @@ void loop() {
   // }
 
   if (distFront < safeDistForTurn) {
+    Serial.println("Reached end of track");
     stopVehicle();
   }
   // TODO: handle two lines per turn
-  if (!lineFlag && isOnLine()) turns++;
+  if (!lineFlag && isOnLine()) {
+    Serial.println("Crossing a line");
+    turns++;
+  }
 
   if (distFrontLeft > distFrontRight + turnThreshold) {
+    Serial.println("Slight rotation to Left");
     turnSlightLeft(); 
     return;
   } else if (distFrontRight > distFrontLeft + turnThreshold) {
+    Serial.println("Slight rotation to Right");
     turnSlightRight();
     return;
   } 
   else if (distLeft > distRight + turnThreshold) {
+    Serial.println("Sharp rotation to Left");
     turnLeft();
     return;
   } else if (distRight > distLeft + turnThreshold) {
+    Serial.println("Sharp rotation to Right");
     turnRight();
     return;
   }
